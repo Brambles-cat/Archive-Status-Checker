@@ -1,55 +1,56 @@
 import tkinter as tk
+
+from googleapiclient.errors import HttpError
 from tkinter import filedialog, Event
+from Enums import States, ArchiveIndices
+from typing import List, Tuple
+
+import googleapiclient.discovery
 import yt_dlp
 import csv
 import threading
-import googleapiclient.discovery
-from googleapiclient.errors import HttpError
 import requests
 import math
 import io
 
-class Map:
-    LINK = 3
-    TITLE = 4
-    CHANNEL = 5
-    STATE = 7
-    ALT_LINK = 8
-    FOUND = 9
-    NOTES = 10
 
 csv_str: str = requests.get('https://docs.google.com/spreadsheets/d/1rEofPkliKppvttd8pEX8H6DtSljlfmQLdFR-SlyyX7E/export?format=csv').content.decode()
+# The requested archive csv comes with extra sets of quotes around titles that include
+# quotation marks so a csv_reader is necessary to accomodate for that
 csv_reader = csv.reader(io.StringIO(csv_str))
 archive_rows = [row for row in csv_reader]
-del archive_rows[0]
-total_videos = len(archive_rows)
-videos_to_fetch = total_videos
+# -1 since the first row is a header
+videos_to_fetch = len(archive_rows) - 1
 
-# Initialize the yt-dlp downloader
 ydl_opts = {
     'quiet': True,
-    'max_threads': 4,  # Adjust the number of concurrent downloads
-    'retries': 3,      # Number of retries for failed downloads
-    'sleep_interval': 3,  # Time to wait between retries (in seconds)
+    'retries': 3,
+    'sleep_interval': 3,
 }
+
 ydl = yt_dlp.YoutubeDL(ydl_opts)
 
-# Function to check non-YouTube video status
-def check_non_youtube_video_status(ydl, video_url):
+def check_non_youtube_video_status(ydl, video_url) -> Tuple[str, List[States]]:
     try:
+        status = []
+
         info_dict = ydl.extract_info(video_url, download=False)
+
         if info_dict.get('upload_date', None):
-            video_status = "Found"
             specific_status = info_dict.get('access_control', {}).get('form', 'Public')
-            video_status += f": {specific_status}" if specific_status != "Public" else ": Public"
+
+            if specific_status != 'Public':
+                # breakpoint
+                status.append(States.get(specific_status))
         else:
-            video_status = "Missing: deleted or private"
-        return video_status
+            status.append(States.UNAVAILABLE)
+        return 'title or smt idk TODO', status
     except yt_dlp.DownloadError as e:
-        return f"Error: {str(e)}"
+        # Todo
+        raise e
 
 # Function to check video status using YouTube Data API
-def check_youtube_video_status(video_id, youtube, tries=0):
+def check_youtube_video_status(video_id, youtube, tries=0) -> Tuple[str, List[States], List[str]]:
     try:
         response = youtube.videos().list(
             part="snippet,contentDetails,status",
@@ -57,29 +58,38 @@ def check_youtube_video_status(video_id, youtube, tries=0):
         ).execute()
 
         if response.get("items"):
+            states = []
+
             item = response["items"][0]
             video_title = item["snippet"]["title"]
             status_info = item.get("status", {})
-            privacy_status = status_info.get("privacyStatus", "public")
-            age_restricted = item["contentDetails"].get("contentRating", {}).get("ytRating") == "ytAgeRestricted"
-
-            blocked_countries = []
             video_details = item["contentDetails"]
+
+            if not status_info.get("embeddable"):
+                states.append(States.NON_EMBEDDABLE)
+            
+            if video_details.get("contentRating", {}).get("ytRating") == "ytAgeRestricted":
+                states.append(States.AGE_RESTICTED)
+
             region_restriction = video_details.get("regionRestriction", {})
-            blocked_countries = region_restriction.get("blocked", [])
+
+            blocked_countries = ["ALL EXCEPT:"] + region_restriction.get("allowed") if "allowed" in region_restriction else region_restriction.get("blocked", [])
+            if len(blocked_countries) >= 5 or "allowed" in region_restriction:
+                states.append(States.BLOCKED)
 
 
-            return video_title, status_to_str(privacy_status, blocked_countries, age_restricted), blocked_countries
+            return video_title, states, blocked_countries #status_to_str(privacy_status, blocked_countries, age_restricted), blocked_countries
         else:
-            return "Video not found", "unavailable", []
+            return "Video not found", [States.UNAVAILABLE], []
 
     except HttpError as e:
         if e.resp.status == 404:
-            return "Video not found", "Missing: deleted or private", []
+            return "Video not found", [States.UNAVAILABLE], []
         elif e.resp.status == 400 and tries < 3:
             return check_youtube_video_status(video_id, youtube, tries + 1)
         
-        raise e
+        print(f"\033[91m\n{e.reason}")
+        quit(1)
 
 def status_to_str(privacy: str, blocked_countries: list, age_restricted: bool):
     video_status = f"Found: {privacy}"
@@ -103,40 +113,48 @@ def run_status_checker():
 
         youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=youtube_api_key)
 
-        # + 1 Since the video rows start at row 2
-        starting_row_num = int(checks_row_start_entry.get()) + 1
+        starting_row_num = int(checks_row_start_entry.get())
         processed_videos = 0
 
-        archive_rows = archive_rows[starting_row_num - 2 : int(checks_row_end_entry.get()) + 1]
+        checking_range = archive_rows[starting_row_num - 1 : int(checks_row_end_entry.get())]
         output_csv_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV Files", "*.csv")])
+
+        if not output_csv_path: return
 
         updated_rows = []
 
-        for i, archive_row in enumerate(archive_rows):
-            video_url = archive_row[Map.LINK]
-            video_title = archive_row[Map.TITLE]
+        for i, archive_row in enumerate(checking_range):
+            archive_row_states = archive_row[ArchiveIndices.STATE].split('/') if len(archive_row[ArchiveIndices.STATE].split('/')) != 1 else archive_row[ArchiveIndices.STATE].split(' & ')
+            archive_row_states = [States.get(state) for state in archive_row_states if States.get(state) != None]
+
+            video_url = archive_row[ArchiveIndices.LINK]
+            video_title = archive_row[ArchiveIndices.TITLE]
 
             if "youtube.com" in video_url:
                 video_id = video_url.split("v=")[-1]
-                updated_video_title, video_status, blocked_countries = check_youtube_video_status(video_id, youtube)
+                updated_video_title, video_states, blocked_countries = check_youtube_video_status(video_id, youtube)
                 
                 if updated_video_title == "Video not found":
                     updated_video_title = video_title
 
             else:
-                video_status = check_non_youtube_video_status(ydl, video_url)
+                updated_video_title, video_states = check_non_youtube_video_status(ydl, video_url)
                 blocked_countries = []
                 # Todo: check for video title updates
                 updated_video_title = video_title
 
-            if video_title != updated_video_title:
-                updated_rows.append(["Current", starting_row_num + i, video_url, video_title, archive_row[Map.STATE], ', '.join(blocked_countries) if 'blocked' in video_status.lower() else ''])
-                updated_rows.append(["Updated", starting_row_num + i, video_url, updated_video_title, video_status, ', '.join(blocked_countries) if 'blocked' in video_status.lower() else ''])
+            if (
+                (check_titles_var.get() and (video_title != updated_video_title)) or
+                len(blocked_countries) >= 5 and States.BLOCKED not in archive_row_states or
+                len(blocked_countries) < 5 and States.BLOCKED in archive_row_states or
+                any(video_state not in archive_row_states for video_state in video_states) or
+                any(archive_state not in video_states for archive_state in archive_row_states)
+            ):
+                updated_rows.append(["Current", starting_row_num + i, video_url, video_title, archive_row[ArchiveIndices.STATE], ', '.join(blocked_countries) if States.BLOCKED in archive_row_states else ''])
+                updated_rows.append(["Updated", starting_row_num + i, video_url, updated_video_title, ' & '.join(map(lambda state: state.value[0], tuple(video_states))) if video_states else '', ', '.join(blocked_countries) if States.BLOCKED in video_states else ''])
                 updated_rows.append([""] * len(updated_rows[-1]))
 
-            # Update progress label on the main thread
             processed_videos += 1
-
             progress_label.config(text=f"Progress: {processed_videos}/{videos_to_fetch} videos checked")
 
         # Write to the output CSV with headers
@@ -146,7 +164,6 @@ def run_status_checker():
             csv_writer.writerow(header)
             csv_writer.writerows(updated_rows)
 
-        # Update the result label on the main thread
         result_label.config(text=f"Output CSV saved at: {output_csv_path}")
 
     # Run the check_videos function in a separate thread
@@ -164,13 +181,18 @@ def clamp_to_archive_range(e: Event):
             start = int(start)
         except:
             checks_row_start_entry.delete(0, len(start))
-            checks_row_start_entry.insert(0, 1)
+            checks_row_start_entry.insert(0, 2)
+            videos_to_fetch = end - 1
+            progress_label.config(text=f"Progress: 0/{videos_to_fetch} videos checked")
             return
 
-        clamped = max(1, min(start, end))
+        clamped = max(2, min(start, end))
 
         if clamped != start:
-            checks_row_start_entry.delete(0, int(math.log10(abs(start))) + 1 + (abs(start) != start))
+            checks_row_start_entry.delete(
+                0,
+                int(math.log10(abs(start))) + 1 + (abs(start) != start) if start != 0 else 2
+            )
             checks_row_start_entry.insert(0, clamped)
 
         videos_to_fetch = end - clamped + 1
@@ -182,13 +204,18 @@ def clamp_to_archive_range(e: Event):
             end = int(end)
         except:
             checks_row_end_entry.delete(0, len(end))
-            checks_row_end_entry.insert(0, total_videos)
+            checks_row_end_entry.insert(0, len(archive_rows))
+            videos_to_fetch = len(archive_rows) - start + 1
+            progress_label.config(text=f"Progress: 0/{videos_to_fetch} videos checked")
             return
         
-        clamped = max(start, min(end, total_videos))
+        clamped = max(start, min(end, len(archive_rows)))
 
         if clamped != end:
-            checks_row_end_entry.delete(0, int(math.log10(abs(end))) + 1 + (abs(end) != end))
+            checks_row_end_entry.delete(
+                0,
+                int(math.log10(abs(end))) + 1 + (abs(end) != end) if end != 0 else 2
+            )
             checks_row_end_entry.insert(0, clamped)
 
         videos_to_fetch = clamped - start + 1
@@ -206,24 +233,50 @@ youtube_api_key_label.pack()
 youtube_api_key_entry = tk.Entry(root, show="*")
 youtube_api_key_entry.pack()
 
-checks_row_start_entry = tk.Entry(root, name="start",)
+
+
+range_frame = tk.Frame(root)
+range_frame.pack(pady=5)
+
+range_label = tk.Label(range_frame, text="Range")
+range_label.pack(pady=(0, 3))
+
+checks_row_start_entry = tk.Entry(range_frame, name="start", width=10)
 checks_row_start_entry.bind("<Return>", clamp_to_archive_range)
 checks_row_start_entry.bind("<FocusOut>", clamp_to_archive_range)
-checks_row_start_entry.insert(0, "1")
-checks_row_start_entry.pack()
+checks_row_start_entry.insert(0, 2)
+checks_row_start_entry.pack(side="left", padx=5)
 
-checks_row_end_entry = tk.Entry(root, name="end")
+checks_row_end_entry = tk.Entry(range_frame, name="end", width=10)
 checks_row_end_entry.bind("<Return>", clamp_to_archive_range)
 checks_row_end_entry.bind("<FocusOut>", clamp_to_archive_range)
-checks_row_end_entry.insert(0, total_videos)
+checks_row_end_entry.insert(0, len(archive_rows))
+checks_row_end_entry.pack(side="left", padx=5)
 
-checks_row_end_entry.pack()
 
-start_button = tk.Button(root, text="Run Status Checker", command=run_status_checker)
+
+options_frame = tk.Frame(root)
+options_frame.pack(pady=8)
+
+options_label = tk.Label(options_frame, text="Options")
+options_label.grid(row=0, column=0, sticky=tk.W)
+
+check_titles_var = tk.BooleanVar(value=True)
+check_titles = tk.Checkbutton(options_frame, text="Check Title Differences", variable=check_titles_var)
+check_titles.grid(row=1, column=0)
+
+
+
+run_frame = tk.Frame(root)
+run_frame.pack(pady=(15, 5))
+
+start_button = tk.Button(run_frame, text="Run Status Checker", command=run_status_checker)
 start_button.pack()
 
-progress_label = tk.Label(root, text=f"Progress: 0/{total_videos} videos checked")
-progress_label.pack(pady=10)
+progress_label = tk.Label(run_frame, text=f"Progress: 0/{videos_to_fetch} videos checked")
+progress_label.pack(pady=3)
+
+
 
 result_label = tk.Label(root, text="")
 result_label.pack(pady=10)
