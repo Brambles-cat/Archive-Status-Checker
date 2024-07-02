@@ -12,7 +12,7 @@ class ArchiveIndices:
 # Todo, find a way to keep non detectable states such as muted or blurred when present with other states
 class States(Enum):
     # Spelling err yes I know
-    NON_EMBEDDABLE = ('non-embedable',)
+    NON_EMBEDDABLE = ('non-embedable', 'non-embeddable')
     # Todo: ask what the difference between deleted, private and unavailable is
     UNAVAILABLE = ('unavailable', 'deleted', 'private', 'tos deleted')
     # DELETED = 'deleted'
