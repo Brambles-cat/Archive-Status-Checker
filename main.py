@@ -73,7 +73,7 @@ def check_youtube_video_status(video_id, youtube, tries=0) -> Tuple[str, List[St
 
             region_restriction = video_details.get("regionRestriction", {})
 
-            blocked_countries = ["ALL EXCEPT:"] + region_restriction.get("allowed") if "allowed" in region_restriction else region_restriction.get("blocked", [])
+            blocked_countries = ["EVERYWHERE EXCEPT:"] + region_restriction.get("allowed") if "allowed" in region_restriction else region_restriction.get("blocked", [])
             if len(blocked_countries) >= 5 or "allowed" in region_restriction:
                 states.append(States.BLOCKED)
 
@@ -145,10 +145,10 @@ def run_status_checker():
 
             if (
                 (check_titles_var.get() and (video_title != updated_video_title)) or
-                len(blocked_countries) >= 5 and States.BLOCKED not in archive_row_states or
-                len(blocked_countries) < 5 and States.BLOCKED in archive_row_states or
-                any(video_state not in archive_row_states for video_state in video_states) or
-                any(archive_state not in video_states for archive_state in archive_row_states)
+                (len(blocked_countries) >= 5 and States.BLOCKED not in archive_row_states) or
+                (len(blocked_countries) < 5 and States.BLOCKED in archive_row_states and "EVERYWHERE EXCEPT:" not in blocked_countries) or
+                (any(video_state not in archive_row_states for video_state in video_states)) or
+                (any(archive_state not in video_states for archive_state in archive_row_states))
             ):
                 updated_rows.append(["Current", starting_row_num + i, video_url, video_title, archive_row[ArchiveIndices.STATE], ', '.join(blocked_countries) if States.BLOCKED in archive_row_states else ''])
                 updated_rows.append(["Updated", starting_row_num + i, video_url, updated_video_title, ' & '.join(map(lambda state: state.value[0], tuple(video_states))) if video_states else '', ', '.join(blocked_countries) if States.BLOCKED in video_states else ''])
@@ -261,7 +261,7 @@ options_frame.pack(pady=8)
 options_label = tk.Label(options_frame, text="Options")
 options_label.grid(row=0, column=0, sticky=tk.W)
 
-check_titles_var = tk.BooleanVar(value=True)
+check_titles_var = tk.BooleanVar()
 check_titles = tk.Checkbutton(options_frame, text="Check Title Differences", variable=check_titles_var)
 check_titles.grid(row=1, column=0)
 
