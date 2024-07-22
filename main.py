@@ -171,7 +171,7 @@ def run_status_checker():
                 if _ and alt_useable and archive_row[ArchiveIndices.FOUND].lower() == 'needed':
                     updated_rows.append(["NOTE", i, video_url, "ALT LINK IS USEABLE BUT LABELED 'needed'", ' & '.join(map(lambda state: state.value[0], tuple(video_states))) if video_states else '', ', '.join(blocked_countries) if States.BLOCKED in video_states else ''])
                     updated = True
-                elif _ and not alt_useable and archive_row[ArchiveIndices.FOUND].lower() != 'needed':
+                elif _ and not alt_useable and archive_row[ArchiveIndices.FOUND].lower() != 'needed' and not (States.AGE_RESTICTED in video_states and 'age restriction' in archive_row[ArchiveIndices.NOTES]):
                     updated_rows.append(["NOTE", i, video_url, "ALT LINK NOT USEABLE", ' & '.join(map(lambda state: state.value[0], tuple(video_states))) if video_states else '', ', '.join(blocked_countries) if States.BLOCKED in video_states else ''])
                     updated = True
             
