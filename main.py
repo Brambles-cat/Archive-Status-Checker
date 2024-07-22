@@ -158,7 +158,7 @@ def run_status_checker():
                 (any(video_state not in initial_states for video_state in video_states)) or
                 (any(archive_state not in video_states for archive_state in initial_states))
                 ):
-                updated_rows.append(["Current", i, video_url, video_title, archive_row[ArchiveIndices.STATE], ', '.join(blocked_countries) if States.BLOCKED in initial_states else ''])
+                updated_rows.append(["Current", i, video_url, video_title, archive_row[ArchiveIndices.STATE], ', '.join(blocked_countries) if States.BLOCKED in video_states else ''])
                 updated_rows.append(["Updated", i, video_url, fetched_video_title if check_titles else video_title, ' & '.join(map(lambda state: state.value[0], tuple(video_states))) if video_states else '', ', '.join(blocked_countries) if States.BLOCKED in video_states else ''])
                 updated = True
             
@@ -166,13 +166,13 @@ def run_status_checker():
                 video_url = archive_row[ArchiveIndices.ALT_LINK]
                 _, video_states, blocked_countries = get_video_status(video_url, video_title)
                 
-                alt_useable = _ and (len(video_states) or len(blocked_countries) >= 5 or (len(blocked_countries) < 5 and States.BLOCKED in initial_states and blocked_everywhere not in blocked_countries))
+                alt_useable = _ and not (len(video_states) or len(blocked_countries) >= 5 or (len(blocked_countries) < 5 and States.BLOCKED in video_states and blocked_everywhere not in blocked_countries))
 
-                if _ and archive_row[ArchiveIndices.FOUND].lower() == 'needed':
-                    updated_rows.append(["NOTE", "ALT LINK IS USEABLE BUT LABELED 'needed'",'','','',''])
+                if _ and alt_useable and archive_row[ArchiveIndices.FOUND].lower() == 'needed':
+                    updated_rows.append(["NOTE", i, video_url, "ALT LINK IS USEABLE BUT LABELED 'needed'", ' & '.join(map(lambda state: state.value[0], tuple(video_states))) if video_states else '', ', '.join(blocked_countries) if States.BLOCKED in video_states else ''])
                     updated = True
-                elif _ and not alt_useable:
-                    updated_rows.append(["NOTE", "ALT LINK NOT USEABLE",'','','',''])
+                elif _ and not alt_useable and archive_row[ArchiveIndices.FOUND].lower() != 'needed':
+                    updated_rows.append(["NOTE", i, video_url, "ALT LINK NOT USEABLE", ' & '.join(map(lambda state: state.value[0], tuple(video_states))) if video_states else '', ', '.join(blocked_countries) if States.BLOCKED in video_states else ''])
                     updated = True
             
             if updated:
