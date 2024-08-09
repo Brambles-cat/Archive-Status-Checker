@@ -4,9 +4,9 @@ from googleapiclient.errors import HttpError
 from tkinter import filedialog, Event
 from Enums import States, ArchiveIndices
 from typing import List, Tuple
+from yt_dlp import YoutubeDL, DownloadError
 
 import googleapiclient.discovery
-import yt_dlp
 import csv
 import threading
 import requests
@@ -28,28 +28,51 @@ ydl_opts = {
     'sleep_interval': 3,
 }
 
-ydl = yt_dlp.YoutubeDL(ydl_opts)
+ydl = YoutubeDL(ydl_opts)
 youtube = None
 blocked_everywhere = 'EVERYWHERE EXCEPT:'
 
-def check_non_youtube_video_status(ydl, video_url) -> Tuple[str, List[States]]:
+def check_non_youtube_video_status(ydl: YoutubeDL, video_url) -> Tuple[str, List[States], List[str]]:  
+    # Note: During debugging, no videos were found to have any bad status
+    # Most of this was copilot generated since it'd be difficult or tedious
+    # to check for each platforms edge cases. It's implementation could potentially
+    # be inaccurate but in practice should be sufficient enough especially if
+    # the debugger is used to manually check and update this code every once in a while
+
     try:
-        status = []
+        states = []
 
         info_dict = ydl.extract_info(video_url, download=False)
 
         if info_dict.get('upload_date', None):
-            specific_status = info_dict.get('access_control', {}).get('form', 'Public')
+            visibility = info_dict.get('access_control', {}).get('form', 'Public')
+            video_title = info_dict.get("title")
+            age_limit = info_dict.get("age_limit")
+            availability = info_dict.get("availability")
+            geo_restricted = info_dict.get("geo_restricted")
+            content_rating = info_dict.get("content_rating")
+            status = info_dict.get("status")
+            blocked_countries = info_dict.get("blocked_countries", [])
+            
+            if age_limit and age_limit >= 18:
+                states.append(States.AGE_RESTRICTED)
+            
+            if geo_restricted or (availability and "blocked" in availability):
+                states.append(States.BLOCKED)
+            elif len(blocked_countries) >= 5:
+                states.append(States.BLOCKED)
 
-            if specific_status != 'Public':
-                # breakpoint
-                status.append(States.get(specific_status))
+            if visibility != 'Public':
+                states.append(States.get(visibility))
         else:
-            status.append(States.UNAVAILABLE)
-        return 'title or smt idk TODO', status
-    except yt_dlp.DownloadError as e:
-        # Todo
-        raise e
+            states.append(States.UNAVAILABLE)
+
+        return video_title, states, blocked_countries
+    except DownloadError:
+        if "vimeo.com" in video_url:
+            return "[COULDN'T FETCH VIMEO DATA]", [], []
+        
+        return "Video not found", [States.UNAVAILABLE], []
 
 # Function to check video status using YouTube Data API
 def check_youtube_video_status(video_id, tries=0) -> Tuple[str, List[States], List[str]]:
@@ -71,7 +94,7 @@ def check_youtube_video_status(video_id, tries=0) -> Tuple[str, List[States], Li
                 states.append(States.NON_EMBEDDABLE)
             
             if video_details.get("contentRating", {}).get("ytRating") == "ytAgeRestricted":
-                states.append(States.AGE_RESTICTED)
+                states.append(States.AGE_RESTRICTED)
 
             region_restriction = video_details.get("regionRestriction", {})
 
@@ -94,19 +117,16 @@ def check_youtube_video_status(video_id, tries=0) -> Tuple[str, List[States], Li
         quit(1)
 
 def get_video_status(video_url, video_title):
-    if "youtube.com" in video_url:
-        video_id = video_url.split("v=")[-1]
-        updated_video_title, video_states, blocked_countries = check_youtube_video_status(video_id)
-        
-        if updated_video_title == "Video not found":
-            updated_video_title = video_title
+    if "youtube.com" in video_url or "youtu.be" in video_url:
+        video_id = video_url.split("v=")[-1] if "youtube.com" in video_url else video_url.split("/")[-1]
+        updated_video_title, video_states, blocked_countries =  check_youtube_video_status(video_id)
 
     else:
-        # TODO
-        return (None,None,None)
-        updated_video_title, video_states = check_non_youtube_video_status(ydl, video_url)
+        updated_video_title, video_states, blocked_countries = check_non_youtube_video_status(ydl, video_url)
         blocked_countries = []
-        # Todo: check for video title updates
+
+
+    if updated_video_title == "Video not found":
         updated_video_title = video_title
     
     return updated_video_title, video_states, blocked_countries
@@ -171,7 +191,7 @@ def run_status_checker():
                 if _ and alt_useable and archive_row[ArchiveIndices.FOUND].lower() == 'needed':
                     updated_rows.append(["NOTE", i, video_url, "ALT LINK IS USEABLE BUT LABELED 'needed'", ' & '.join(map(lambda state: state.value[0], tuple(video_states))) if video_states else '', ', '.join(blocked_countries) if States.BLOCKED in video_states else ''])
                     updated = True
-                elif _ and not alt_useable and archive_row[ArchiveIndices.FOUND].lower() != 'needed' and not (States.AGE_RESTICTED in video_states and 'age restriction' in archive_row[ArchiveIndices.NOTES]):
+                elif _ and not alt_useable and archive_row[ArchiveIndices.FOUND].lower() != 'needed' and not (States.AGE_RESTRICTED in video_states and 'age restriction' in archive_row[ArchiveIndices.NOTES]):
                     updated_rows.append(["NOTE", i, video_url, "ALT LINK NOT USEABLE", ' & '.join(map(lambda state: state.value[0], tuple(video_states))) if video_states else '', ', '.join(blocked_countries) if States.BLOCKED in video_states else ''])
                     updated = True
             
@@ -290,6 +310,10 @@ options_label.grid(row=0, column=0, sticky=tk.W)
 check_titles_var = tk.BooleanVar()
 check_titles = tk.Checkbutton(options_frame, text="Check Title Differences", variable=check_titles_var)
 check_titles.grid(row=1, column=0)
+
+#blocked_equals_unavailable_var = tk.BooleanVar(value=True)
+#blocked_equals_unavailable = tk.Checkbutton(options_frame, text="Blocked = Unavailable ", variable=blocked_equals_unavailable_var)
+#blocked_equals_unavailable.grid(row=2, column=0)
 
 
 
